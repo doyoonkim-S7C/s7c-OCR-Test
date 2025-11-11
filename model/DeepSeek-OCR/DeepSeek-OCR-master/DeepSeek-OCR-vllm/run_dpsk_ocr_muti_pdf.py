@@ -20,7 +20,7 @@ parser.add_argument(
 # Add other arguments that we'll parse later
 parser.add_argument("-i", "--input", type=str, help="입력 디렉토리")
 parser.add_argument("-o", "--output", type=str, help="출력 디렉토리")
-args = parser.parse_known_args()
+args, unknown = parser.parse_known_args()
 
 # Set environment variable for MODE before importing config
 os.environ['DEEPSEEK_MODE'] = args.mode
