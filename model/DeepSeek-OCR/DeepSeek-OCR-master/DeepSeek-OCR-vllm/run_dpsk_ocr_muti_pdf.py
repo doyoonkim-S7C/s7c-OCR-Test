@@ -7,6 +7,8 @@ from tqdm import tqdm
 import torch
 from concurrent.futures import ThreadPoolExecutor
 import argparse
+import time
+import datetime
 
 # Parse command line arguments BEFORE importing config
 parser = argparse.ArgumentParser(description="Deepseek OCR PDF 처리 스크립트")
@@ -253,9 +255,13 @@ def process_single_image(image):
 def process_pdf(pdf_input_path, output_dir, base_filename, prompt):
     """
     단일 PDF 파일을 받아 처리하고, 지정된 output_dir에 결과를 저장합니다.
+    성능 정보도 함께 반환합니다.
     """
     try:
         print(f"\n{Colors.BLUE}--- 시작: {pdf_input_path} ---{Colors.RESET}")
+
+        # 시작 시간 기록
+        start_time = time.time()
 
         # 1. 출력 디렉토리 생성 (각 파일별로)
         os.makedirs(output_dir, exist_ok=True)
@@ -268,7 +274,7 @@ def process_pdf(pdf_input_path, output_dir, base_filename, prompt):
 
         if not images:
             print(f"{Colors.RED}페이지가 없거나 파일을 읽을 수 없습니다: {pdf_input_path}{Colors.RESET}")
-            return
+            return None
 
         # 3. 이미지 전처리
         with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
@@ -278,18 +284,23 @@ def process_pdf(pdf_input_path, output_dir, base_filename, prompt):
                 desc=f"이미지 전처리: {base_filename}"
             ))
 
-        # 4. LLM 생성 실행
+        # 4. LLM 생성 실행 (순수 추론 시간 측정)
         print(f"{Colors.GREEN}LLM 생성 실행 중...{Colors.RESET}")
+        inference_start_time = time.time()
         outputs_list = llm.generate(
             batch_inputs,
             sampling_params=sampling_params
         )
+        inference_end_time = time.time()
+
+        # 순수 추론 시간 계산
+        pure_inference_time = inference_end_time - inference_start_time
 
         # 5. 출력 경로 정의 (상대 경로) - 모드 정보 포함
         mode_suffix = f"_{args.mode.lower()}"
-        mmd_det_path = os.path.join(output_dir, f'{base_filename}_{mode_suffix}_det.mmd')
-        mmd_path = os.path.join(output_dir, f'{base_filename}_{mode_suffix}.mmd')
-        pdf_out_path = os.path.join(output_dir, f'{base_filename}_{mode_suffix}_layouts.pdf')
+        mmd_det_path = os.path.join(output_dir, f'{base_filename}{mode_suffix}_det.mmd')
+        mmd_path = os.path.join(output_dir, f'{base_filename}{mode_suffix}.mmd')
+        pdf_out_path = os.path.join(output_dir, f'{base_filename}{mode_suffix}_layouts.pdf')
 
         contents_det = ''
         contents = ''
@@ -339,10 +350,30 @@ def process_pdf(pdf_input_path, output_dir, base_filename, prompt):
 
         pil_to_pdf_img2pdf(draw_images, pdf_out_path)
 
+        # 전체 처리 시간 계산
+        end_time = time.time()
+        total_processing_time = end_time - start_time
+
         print(f"{Colors.GREEN}--- 완료: {pdf_input_path} -> {output_dir} ---{Colors.RESET}")
+
+        # 성능 정보 반환
+        performance_info = {
+            'input_file': pdf_input_path,
+            'output_files': {
+                'mmd': mmd_path,
+                'mmd_det': mmd_det_path,
+                'pdf_layout': pdf_out_path
+            },
+            'pure_inference_time': pure_inference_time,
+            'total_processing_time': total_processing_time,
+            'num_pages': len(images)
+        }
+
+        return performance_info
 
     except Exception as e:
         print(f"{Colors.RED}파일 처리 중 심각한 오류 발생 {pdf_input_path}: {e}{Colors.RESET}")
+        return None
 
 
 # [전체 교체]
@@ -361,6 +392,11 @@ if __name__ == "__main__":
     BASE_OUTPUT_DIR = final_output
 
     prompt = PROMPT  # 프롬프트는 config에서 그대로 사용
+
+    # --- 성능 보고서 초기화 ---
+    performance_log = []
+    script_start_time = time.time()
+    current_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # --- 3. 처리할 모든 PDF 파일 찾기 (os.walk) ---
     pdf_files_to_process = []
@@ -389,7 +425,75 @@ if __name__ == "__main__":
             base_filename = os.path.splitext(os.path.basename(pdf_input_path))[0]
 
             # 4. 위에서 만든 process_pdf 함수 호출
-            process_pdf(pdf_input_path, output_subdir, base_filename, prompt)
+            performance_info = process_pdf(pdf_input_path, output_subdir, base_filename, prompt)
+
+            if performance_info:
+                performance_log.append(performance_info)
+
+        script_end_time = time.time()
+        total_script_time = script_end_time - script_start_time
+
+        # --- 5. 성능 보고서 작성 및 저장 ---
+        report_filename = f"performance_report_{args.mode.lower()}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        report_path = os.path.join(BASE_OUTPUT_DIR, report_filename)
+
+        with open(report_path, 'w', encoding='utf-8') as report_file:
+            # 헤더 정보
+            report_file.write("=" * 80 + "\n")
+            report_file.write("DeepSeek OCR 성능 보고서\n")
+            report_file.write("=" * 80 + "\n")
+
+            # 모델 정보
+            report_file.write("모델 정보:\n")
+            report_file.write("-" * 40 + "\n")
+            report_file.write(f"MODEL_PATH: {MODEL_PATH}\n")
+            report_file.write(f"args.mode: {args.mode}\n")
+            report_file.write(f"PROMPT: {PROMPT}\n")
+            report_file.write(f"MAX_CONCURRENCY: {MAX_CONCURRENCY}\n")
+            report_file.write(f"NUM_WORKERS: {NUM_WORKERS}\n")
+            report_file.write(f"CROP_MODE: {CROP_MODE}\n")
+            report_file.write(f"반복 건너뛰기: {SKIP_REPEAT}\n\n")
+
+            # 전체 통계
+            if performance_log:
+                total_pdfs = len(performance_log)
+                total_pages = sum(info['num_pages'] for info in performance_log)
+                total_pure_inference_time = sum(info['pure_inference_time'] for info in performance_log)
+                avg_inference_time_per_pdf = total_pure_inference_time / total_pdfs
+                avg_inference_time_per_page = total_pure_inference_time / total_pages if total_pages > 0 else 0
+
+                report_file.write("전체 통계:\n")
+                report_file.write("-" * 40 + "\n")
+                report_file.write(f"처리된 PDF 수: {total_pdfs}\n")
+                report_file.write(f"총 페이지 수: {total_pages}\n")
+                report_file.write(f"총 순수 추론 시간: {total_pure_inference_time:.2f}초\n")
+                report_file.write(f"PDF당 평균 추론 시간: {avg_inference_time_per_pdf:.2f}초\n")
+                report_file.write(f"페이지당 평균 추론 시간: {avg_inference_time_per_page:.2f}초\n\n")
+
+                # 개별 PDF 상세 정보
+                report_file.write("개별 PDF 처리 결과:\n")
+                report_file.write("=" * 80 + "\n")
+
+                for i, info in enumerate(performance_log, 1):
+                    input_filename = os.path.basename(info['input_file'])
+                    mmd_filename = os.path.basename(info['output_files']['mmd'])
+                    mmd_det_filename = os.path.basename(info['output_files']['mmd_det'])
+                    pdf_layout_filename = os.path.basename(info['output_files']['pdf_layout'])
+
+                    report_file.write(f"[{i:02d}] {input_filename}\n")
+                    report_file.write("-" * 60 + "\n")
+                    report_file.write(f"입력 파일: {input_filename}\n")
+                    report_file.write(f"출력 파일들:\n")
+                    report_file.write(f"  - MMD: {mmd_filename}\n")
+                    report_file.write(f"  - MMD (상세): {mmd_det_filename}\n")
+                    report_file.write(f"  - PDF 레이아웃: {pdf_layout_filename}\n")
+                    report_file.write(f"페이지 수: {info['num_pages']}\n")
+                    report_file.write(f"순수 추론 시간: {info['pure_inference_time']:.2f}초\n")
+                    report_file.write(f"전체 처리 시간: {info['total_processing_time']:.2f}초\n")
+                    report_file.write(f"페이지당 평균 추론 시간: {info['pure_inference_time']/info['num_pages']:.2f}초\n")
+                    report_file.write("\n")
+
+        print(f"\n{Colors.GREEN}성능 보고서가 저장되었습니다: {report_path}{Colors.RESET}")
 
     print(f"\n{Colors.GREEN}모든 작업이 완료되었습니다.{Colors.RESET}")
 
