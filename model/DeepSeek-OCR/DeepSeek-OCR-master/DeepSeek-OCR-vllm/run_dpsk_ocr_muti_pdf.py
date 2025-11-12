@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 import argparse
 import time
 import datetime
+import gc
+import psutil
 
 # Parse command line arguments BEFORE importing config
 parser = argparse.ArgumentParser(description="Deepseek OCR PDF 처리 스크립트")
@@ -77,6 +79,23 @@ class Colors:
     YELLOW = '\033[33m'
     BLUE = '\033[34m'
     RESET = '\033[0m'
+
+
+def cleanup_memory():
+    """메모리 정리 함수 - 각 PDF 처리 후 호출"""
+    gc.collect()  # Python 가비지 컬렉션
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()  # GPU 캐시 정리
+        torch.cuda.synchronize()  # CUDA 동기화
+
+        # GPU 메모리 사용량 출력
+        gpu_memory = torch.cuda.memory_allocated() / 1024**3
+        gpu_reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"{Colors.YELLOW}GPU 메모리 - 사용중: {gpu_memory:.2f}GB, 예약됨: {gpu_reserved:.2f}GB{Colors.RESET}")
+
+    # 시스템 메모리 사용량 출력
+    memory = psutil.virtual_memory()
+    print(f"{Colors.YELLOW}시스템 메모리 사용률: {memory.percent:.1f}%{Colors.RESET}")
 
 
 def pdf_to_images_high_quality(pdf_path, dpi=144, image_format="PNG"):
@@ -429,6 +448,11 @@ if __name__ == "__main__":
 
             if performance_info:
                 performance_log.append(performance_info)
+
+            # 각 PDF 처리 후 메모리 정리
+            cleanup_memory()
+            print(f"{Colors.GREEN}메모리 정리 완료: {os.path.basename(pdf_input_path)}{Colors.RESET}")
+            print("-" * 50)
 
         script_end_time = time.time()
         total_script_time = script_end_time - script_start_time
